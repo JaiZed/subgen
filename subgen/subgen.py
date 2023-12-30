@@ -12,7 +12,10 @@ import io
 from array import array
 from typing import BinaryIO, Union, Any
 import random
+import argparse
 
+logging.basicConfig(level=logging.INFO, filename='subgen.log')
+                    
 # List of packages to install
 packages_to_install = [
     'numpy',
@@ -25,14 +28,14 @@ packages_to_install = [
     'whisper',
     # Add more packages as needed
 ]
-
-for package in packages_to_install:
-    print(f"Installing {package}...")
-    try:
-        subprocess.run(['pip3', 'install', package], check=True)
-        print(f"{package} has been successfully installed.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to install {package}: {e}")
+def installPackages():
+    for package in packages_to_install:
+        print(f"Installing {package}...")
+        try:
+            subprocess.run(['pip3', 'install', package], check=True)
+            print(f"{package} has been successfully installed.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install {package}: {e}")
 
 from fastapi import FastAPI, File, UploadFile, Query, Header, Body, Form, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
@@ -42,6 +45,19 @@ import requests
 import av
 import ffmpeg
 import whisper
+
+# Construct the argument parser
+parser = argparse.ArgumentParser()
+parser.add_argument('--debug', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
+                    help="Enable console debugging (default: False)")
+parser.add_argument('--install', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
+                    help="Install packages (default: False)")
+args = parser.parse_args()
+if args.install:
+    installPackages()
+if args.debug:
+    logging.getLogger().setLevel("DEBUG")
+
 
 def convert_to_bool(in_bool):
     if isinstance(in_bool, bool):
@@ -254,6 +270,9 @@ def delete_model():
     if len(files_to_transcribe) == 0:
         global model
         logging.debug("Queue is empty, clearing/releasing VRAM")
+
+def reallyDeleteModel():
+        del model
         model = None
         gc.collect()
 
@@ -429,7 +448,7 @@ def refresh_jellyfin_metadata(itemid: str, server_ip: str, jellyfin_token: str) 
     users = json.loads(requests.get(f"{server_ip}/Users", headers=headers).content)
     jellyfin_admin = get_jellyfin_admin(users)
 
-    response = requests.get(f"{server_ip}/Users/{jellyfin_admin}/Items/{item_id}/Refresh", headers=headers)
+    response = requests.get(f"{server_ip}/Users/{jellyfin_admin}/Items/{itemid}/Refresh", headers=headers)
 
     # Sending the PUT request to refresh metadata
     response = requests.post(url, headers=headers)
@@ -612,7 +631,7 @@ whisper_languages = {
     "su": "sundanese",
 }
 
-print("Starting webhook!")
 if __name__ == "__main__":
     import uvicorn
+    print("Starting webhook!")
     uvicorn.run("subgen:app", host="0.0.0.0", port=int(webhookport), reload=debug, use_colors=True)
