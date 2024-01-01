@@ -1,3 +1,5 @@
+
+from datetime import datetime
 import subprocess
 import os
 import json
@@ -52,11 +54,17 @@ parser.add_argument('--debug', default=False, type=bool, const=True, metavar="BO
                     help="Enable console debugging (default: False)")
 parser.add_argument('--install', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
                     help="Install packages (default: False)")
+parser.add_argument('--append', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
+                    help="Append 'Transcribed by whisper' to generated subtitle (default: False)")
 args = parser.parse_args()
 if args.install:
     installPackages()
 if args.debug:
     logging.getLogger().setLevel("DEBUG")
+if args.append:
+    appendWhisper = True
+else:
+    appendWhisper = False
 
 
 def convert_to_bool(in_bool):
@@ -96,6 +104,7 @@ app = FastAPI()
 model = None
 files_to_transcribe = []
 subextension =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.srt"
+subextension =  f".{namesublang}.srt"
 print(f"Transcriptions are limited to running {str(concurrent_transcriptions)} at a time")
 print(f"Running {str(whisper_threads)} threads per transcription")
 
@@ -103,6 +112,18 @@ if debug:
     logging.basicConfig(stream=sys.stderr, level=logging.NOTSET)
 else:
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+
+def appendLine(result):
+    if appendWhisper:
+        lastSegment = result.segments[-1].copy()
+        lastSegment.id += 1
+        lastSegment.start += 100
+        lastSegment.end += 100
+        lastSegment.text = f"Transcribed by whisperAI with faster-whisper ({whisper_model}) on {datetime.now()}"
+        lastSegment.words = []
+        # lastSegment.words[0].word = lastSegment.text
+        # lastSegment.words = lastSegment.words[:len(lastSegment.words)-1]
+        result.segments.append(lastSegment)
 
 @app.get("/plex")
 @app.get("/webhook")
@@ -210,6 +231,13 @@ def receive_emby_webhook(
         print("This doesn't appear to be a properly configured Emby webhook, please review the instructions again!")
      
     return ""
+
+@app.post("/batch")
+def batch(
+        directory: Union[str, None] = Query(default=None)
+):
+    transcribe_existing(directory)
+
 # idea and some code for asr and detect language from https://github.com/ahmetoner/whisper-asr-webservice
 @app.post("/asr")
 def asr(
@@ -230,6 +258,7 @@ def asr(
         random_name = random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", k=6)
         files_to_transcribe.insert(0, f"Bazarr-detect-langauge-{random_name}")
         result = model.transcribe_stable(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, task=task, input_sr=16000)
+        appendLine(result)
         elapsed_time = time.time() - start_time
         minutes, seconds = divmod(int(elapsed_time), 60)
         print(f"Bazarr transcription is completed, it took {minutes} minutes and {seconds} seconds to complete.")
@@ -329,6 +358,7 @@ def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True) 
             start_model()
             
             result = model.transcribe_stable(file_path, task=transcribe_or_translate_str)
+            appendLine(result)
             result.to_srt_vtt(file_path.rsplit('.', 1)[0] + subextension, word_level=word_level_highlight)
             elapsed_time = time.time() - start_time
             minutes, seconds = divmod(int(elapsed_time), 60)
@@ -499,10 +529,17 @@ def is_video_file(file_path):
     av.logging.set_level(av.logging.PANIC)
     try:
         container = av.open(file_path)
+        hasVideo = False
+        hasAudio = False
         for stream in container.streams:
             if stream.type == 'video':
-                return True
-        return False
+                hasVideo = True
+            elif stream.type == 'audio':
+                hasAudio = True
+        if hasAudio and hasVideo:
+            return True
+        else:
+            return False
     except av.AVError:
         return False
 
@@ -512,8 +549,9 @@ def path_mapping(fullpath):
         logging.debug("Updated path: " + fullpath.replace(path_mapping_from, path_mapping_to))
     return fullpath
 
-def transcribe_existing():
+def transcribe_existing(transcribe_folders):
     print("Starting to search folders to see if we need to create subtitles.")
+    transcribe_folders = transcribe_folders.split(",")
     logging.debug("The folders are:")
     for path in transcribe_folders:
         logging.debug(path)
@@ -526,8 +564,7 @@ def transcribe_existing():
     print("Finished searching and queueing files for transcription")
                     
 if transcribe_folders:
-    transcribe_folders = transcribe_folders.split(",")
-    transcribe_existing()
+    transcribe_existing(transcribe_folders)
 
 whisper_languages = {
     "en": "english",
