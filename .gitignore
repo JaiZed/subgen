@@ -1,0 +1,8 @@
+
+.vscode/launch.json
+.vscode/subgen.code-workspace
+models--Systran--faster-whisper-medium/refs/main
+models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/config.json
+models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/model.bin
+models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/tokenizer.json
+models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/vocabulary.txt

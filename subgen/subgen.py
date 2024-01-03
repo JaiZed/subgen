@@ -540,7 +540,7 @@ def is_video_file(file_path):
             return True
         else:
             return False
-    except av.AVError:
+    except (av.AVError, UnicodeDecodeError):
         return False
 
 def path_mapping(fullpath):
