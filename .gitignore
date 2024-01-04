@@ -6,3 +6,5 @@ models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711d
 models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/model.bin
 models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/tokenizer.json
 models--Systran--faster-whisper-medium/snapshots/08e178d48790749d25932bbc082711ddcfdfbc4f/vocabulary.txt
+subgen.log
+subgen/__pycache__/subgen.cpython-311.pyc
