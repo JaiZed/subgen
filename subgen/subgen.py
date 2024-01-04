@@ -234,9 +234,10 @@ def receive_emby_webhook(
 
 @app.post("/batch")
 def batch(
-        directory: Union[str, None] = Query(default=None)
+        directory: Union[str, None] = Query(default=None),
+        forceLanguage: Union[str, None] = Query(default=None)
 ):
-    transcribe_existing(directory)
+    transcribe_existing(directory, forceLanguage)
 
 # idea and some code for asr and detect language from https://github.com/ahmetoner/whisper-asr-webservice
 @app.post("/asr")
@@ -323,7 +324,7 @@ def get_lang_pair(whisper_languages, key):
   else:
     return whisper_languages[other_side]
 
-def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True) -> None:
+def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True, forceLanguage=None) -> None:
     """Generates subtitles for a video file.
 
     Args:
@@ -356,8 +357,10 @@ def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True) 
             print(f"Transcribing file: {os.path.basename(file_path)}")
             start_time = time.time()
             start_model()
-            
-            result = model.transcribe_stable(file_path, task=transcribe_or_translate_str)
+            if forceLanguage == None:
+                result = model.transcribe_stable(file_path, task=transcribe_or_translate_str)
+            else:
+                result = model.transcribe_stable(file_path, language=forceLanguage, task=transcribe_or_translate_str)
             appendLine(result)
             result.to_srt_vtt(file_path.rsplit('.', 1)[0] + subextension, word_level=word_level_highlight)
             elapsed_time = time.time() - start_time
@@ -549,7 +552,7 @@ def path_mapping(fullpath):
         logging.debug("Updated path: " + fullpath.replace(path_mapping_from, path_mapping_to))
     return fullpath
 
-def transcribe_existing(transcribe_folders):
+def transcribe_existing(transcribe_folders, forceLanguage=None):
     print("Starting to search folders to see if we need to create subtitles.")
     transcribe_folders = transcribe_folders.split(",")
     logging.debug("The folders are:")
@@ -559,7 +562,7 @@ def transcribe_existing(transcribe_folders):
             for file in files:
                 file_path = os.path.join(root, file)
                 if is_video_file(file_path):
-                    gen_subtitles(path_mapping(file_path), transcribe_or_translate, False)
+                    gen_subtitles(path_mapping(file_path), transcribe_or_translate, False, forceLanguage)
                     
     print("Finished searching and queueing files for transcription")
                     
