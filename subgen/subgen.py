@@ -16,7 +16,8 @@ from typing import BinaryIO, Union, Any
 import random
 import argparse
 
-logging.basicConfig(level=logging.INFO, filename='subgen.log')
+logFilename = 'c:/tmp/subgen.log'
+logging.basicConfig(level=logging.INFO, filename=logFilename)
                     
 # List of packages to install
 packages_to_install = [
@@ -66,6 +67,7 @@ if args.append:
 else:
     appendWhisper = False
 
+TIME_OFFSET = 5
 
 def convert_to_bool(in_bool):
     if isinstance(in_bool, bool):
@@ -87,7 +89,7 @@ procaddedmedia = convert_to_bool(os.getenv('PROCADDEDMEDIA', True))
 procmediaonplay = convert_to_bool(os.getenv('PROCMEDIAONPLAY', True))
 namesublang = os.getenv('NAMESUBLANG', "aa")
 skipifinternalsublang = os.getenv('SKIPIFINTERNALSUBLANG', "eng")
-webhookport = int(os.getenv('WEBHOOKPORT', 8090))
+webhookport = int(os.getenv('WEBHOOKPORT', 9000))
 word_level_highlight = convert_to_bool(os.getenv('WORD_LEVEL_HIGHLIGHT', False))
 debug = convert_to_bool(os.getenv('DEBUG', False))
 use_path_mapping = convert_to_bool(os.getenv('USE_PATH_MAPPING', False))
@@ -103,10 +105,13 @@ if transcribe_device == "gpu":
 app = FastAPI()
 model = None
 files_to_transcribe = []
-subextension =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.srt"
+# subextension =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.srt"
 subextension =  f".{namesublang}.srt"
+subextensionSDH =  f".{namesublang}.sdh.srt"
 print(f"Transcriptions are limited to running {str(concurrent_transcriptions)} at a time")
 print(f"Running {str(whisper_threads)} threads per transcription")
+print(f"Using {transcribe_device} to encode")
+print(f"Logging to '{logFilename}'")
 
 if debug:
     logging.basicConfig(stream=sys.stderr, level=logging.NOTSET)
@@ -117,8 +122,8 @@ def appendLine(result):
     if appendWhisper:
         lastSegment = result.segments[-1].copy()
         lastSegment.id += 1
-        lastSegment.start += 100
-        lastSegment.end += 100
+        lastSegment.start += TIME_OFFSET
+        lastSegment.end += TIME_OFFSET
         lastSegment.text = f"Transcribed by whisperAI with faster-whisper ({whisper_model}) on {datetime.now()}"
         lastSegment.words = []
         # lastSegment.words[0].word = lastSegment.text
@@ -339,13 +344,17 @@ def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True, 
             return None
             
         if file_path not in files_to_transcribe:
+            message = None
             if has_subtitle_language(file_path, skipifinternalsublang):
-                logging.debug(f"{file_path} already has an internal sub we want, skipping generation")
-                return f"{file_path} already has an internal sub we want, skipping generation"
+                message = f"{file_path} already has an internal subtitle we want, skipping generation"
             elif os.path.exists(file_path.rsplit('.', 1)[0] + subextension):
-                print(f"{file_path} already has a subgen created for this, skipping it")
-                return f"{file_path} already has a subgen created for this, skipping it"
-                
+                message = f"{file_path} already has a subtitle created for this, skipping it"
+            elif os.path.exists(file_path.rsplit('.', 1)[0] + subextensionSDH):
+                message = f"{file_path} already has a SDH subtitle created for this, skipping it"
+            if message != None:
+                print(message)
+                return message                       
+                  
             if front:
                 files_to_transcribe.insert(0, file_path)
             else:
