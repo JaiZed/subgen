@@ -3,6 +3,7 @@ from datetime import datetime
 import subprocess
 import os
 import json
+import traceback
 import xml.etree.ElementTree as ET
 import threading
 import sys
@@ -261,7 +262,8 @@ def asr(
         
         #give the 'process' a random name so mutliple Bazaar transcribes can operate at the same time.
         random_name = random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", k=6)
-        files_to_transcribe.insert(0, f"Bazarr-detect-langauge-{random_name}")
+        bazarr_file = f"Bazarr-detect-language-{random_name}"
+        files_to_transcribe.insert(0,bazarr_file)
         result = model.transcribe_stable(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, task=task, input_sr=16000)
         appendLine(result)
         elapsed_time = time.time() - start_time
@@ -269,7 +271,8 @@ def asr(
         print(f"Bazarr transcription is completed, it took {minutes} minutes and {seconds} seconds to complete.")
     except Exception as e:
         print(f"Error processing or transcribing Bazarr {audio_file.filename}: {e}")
-    files_to_transcribe.remove(f"Bazarr-detect-langauge-{random_name}")
+        print(traceback.format_exc())
+    files_to_transcribe.remove(bazarr_file)
     delete_model()
     return StreamingResponse(
         iter(result.to_srt_vtt(filepath = None, word_level=word_level_highlight)),
@@ -380,6 +383,7 @@ def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True, 
 
     except Exception as e:
         print(f"Error processing or transcribing {file_path}: {e}")
+        print(traceback.format_exc())
     finally:
         delete_model()
 
@@ -405,6 +409,7 @@ def has_subtitle_language(video_file, target_language):
         container.close()
     except Exception as e:
         print(f"An error occurred: {e}")
+        print(traceback.format_exc())
         return False
     
 def get_plex_file_name(itemid: str, server_ip: str, plex_token: str) -> str:
@@ -574,8 +579,6 @@ def transcribe_existing(transcribe_folders, forceLanguage=None):
                     
     print("Finished searching and queueing files for transcription")
                     
-if transcribe_folders:
-    transcribe_existing(transcribe_folders)
 
 whisper_languages = {
     "en": "english",
@@ -684,6 +687,8 @@ if __name__ == "__main__":
     print(f"Running {str(whisper_threads)} threads per transcription")
     print(f"Using {transcribe_device} to encode")
     print(f"Logging to '{logFilename}'")
+    if transcribe_folders:
+        transcribe_existing(transcribe_folders)
     import uvicorn
     print("Starting webhook!")
     uvicorn.run("subgen:app", host="0.0.0.0", port=int(webhookport), reload=debug, use_colors=True)
