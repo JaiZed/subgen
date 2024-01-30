@@ -16,8 +16,6 @@ from typing import BinaryIO, Union, Any
 import random
 import argparse
 
-logFilename = 'c:/tmp/subgen.log'
-logging.basicConfig(level=logging.INFO, filename=logFilename)
                     
 # List of packages to install
 packages_to_install = [
@@ -57,15 +55,19 @@ parser.add_argument('--install', default=False, type=bool, const=True, metavar="
                     help="Install packages (default: False)")
 parser.add_argument('--append', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
                     help="Append 'Transcribed by whisper' to generated subtitle (default: False)")
+parser.add_argument('--logdir', default=".", type=str, const=True, metavar="STR", nargs="?",
+                    help="Specify log file directory (default: .)")
 args = parser.parse_args()
 if args.install:
     installPackages()
-if args.debug:
-    logging.getLogger().setLevel("DEBUG")
 if args.append:
     appendWhisper = True
 else:
     appendWhisper = False
+logFilename = os.path.join(args.logdir, 'subgen.log')
+logging.basicConfig(level=logging.INFO, filename=logFilename)
+if args.debug:
+    logging.getLogger().setLevel("DEBUG")
 
 TIME_OFFSET = 5
 
@@ -108,15 +110,12 @@ files_to_transcribe = []
 # subextension =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.srt"
 subextension =  f".{namesublang}.srt"
 subextensionSDH =  f".{namesublang}.sdh.srt"
-print(f"Transcriptions are limited to running {str(concurrent_transcriptions)} at a time")
-print(f"Running {str(whisper_threads)} threads per transcription")
-print(f"Using {transcribe_device} to encode")
-print(f"Logging to '{logFilename}'")
 
-if debug:
-    logging.basicConfig(stream=sys.stderr, level=logging.NOTSET)
-else:
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+
+# if debug:
+#     logging.basicConfig(stream=sys.stderr, level=logging.NOTSET)
+# else:
+#     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 
 def appendLine(result):
     if appendWhisper:
@@ -681,6 +680,11 @@ whisper_languages = {
 }
 
 if __name__ == "__main__":
+    print(f"Transcriptions are limited to running {str(concurrent_transcriptions)} at a time")
+    print(f"Running {str(whisper_threads)} threads per transcription")
+    print(f"Using {transcribe_device} to encode")
+    print(f"Logging to '{logFilename}'")
     import uvicorn
     print("Starting webhook!")
     uvicorn.run("subgen:app", host="0.0.0.0", port=int(webhookport), reload=debug, use_colors=True)
+
