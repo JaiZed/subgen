@@ -576,7 +576,10 @@ def transcribe_existing(transcribe_folders, forceLanguage=None):
                 file_path = os.path.join(root, file)
                 if is_video_file(file_path):
                     gen_subtitles(path_mapping(file_path), transcribe_or_translate, False, forceLanguage)
-                    
+    # if the path specified was actually a single file and not a folder, process it
+    if os.path.isfile(path):
+        if is_video_file(path):
+            gen_subtitles(path_mapping(path), transcribe_or_translate, False, forceLanguage)                
     print("Finished searching and queueing files for transcription")
                     
 
