@@ -4,7 +4,6 @@ from datetime import datetime
 import subprocess
 import os
 import json
-import traceback
 import xml.etree.ElementTree as ET
 import threading
 import sys
@@ -625,8 +624,6 @@ def get_jellyfin_admin(users):
 def has_audio(file_path):
     try:
         container = av.open(file_path)
-        hasVideo = False
-        hasAudio = False
         for stream in container.streams:
             if stream.type == 'audio':
                 return True
@@ -760,12 +757,6 @@ whisper_languages = {
 }
 
 if __name__ == "__main__":
-    print(f"Transcriptions are limited to running {str(concurrent_transcriptions)} at a time")
-    print(f"Running {str(whisper_threads)} threads per transcription")
-    print(f"Using {transcribe_device} to encode")
-    print(f"Logging to '{logFilename}'")
-    if transcribe_folders:
-        transcribe_existing(transcribe_folders)
     import uvicorn
     logging.info(f"Subgen v{subgen_version}")
     logging.info("Starting Subgen with listening webhooks!")
@@ -779,4 +770,3 @@ if __name__ == "__main__":
     if transcribe_folders:
         transcribe_existing(transcribe_folders)
     uvicorn.run("subgen:app", host="0.0.0.0", port=int(webhookport), reload=debug, use_colors=True)
-
