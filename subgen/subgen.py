@@ -1,3 +1,4 @@
+subgen_version = '2024.3.7.1'
 
 from datetime import datetime
 import subprocess
@@ -12,33 +13,8 @@ import queue
 import logging
 import gc
 import io
-from array import array
-from typing import BinaryIO, Union, Any
 import random
-import argparse
-
-                    
-# List of packages to install
-packages_to_install = [
-    'numpy',
-    'stable-ts',
-    'fastapi',
-    'requests',
-    'faster-whisper',
-    'uvicorn',
-    'python-multipart',
-    'whisper',
-    # Add more packages as needed
-]
-def installPackages():
-    for package in packages_to_install:
-        print(f"Installing {package}...")
-        try:
-            subprocess.run(['pip3', 'install', package], check=True)
-            print(f"{package} has been successfully installed.")
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to install {package}: {e}")
-
+from typing import BinaryIO, Union, Any
 from fastapi import FastAPI, File, UploadFile, Query, Header, Body, Form, Request
 from fastapi.responses import StreamingResponse, RedirectResponse
 import numpy as np
@@ -47,84 +23,118 @@ import requests
 import av
 import ffmpeg
 import whisper
-
-# Construct the argument parser
-parser = argparse.ArgumentParser()
-parser.add_argument('--debug', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
-                    help="Enable console debugging (default: False)")
-parser.add_argument('--install', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
-                    help="Install packages (default: False)")
-parser.add_argument('--append', default=False, type=bool, const=True, metavar="BOOL", nargs="?",
-                    help="Append 'Transcribed by whisper' to generated subtitle (default: False)")
-parser.add_argument('--logdir', default=".", type=str, const=True, metavar="STR", nargs="?",
-                    help="Specify log file directory (default: .)")
-args = parser.parse_args()
-if args.install:
-    installPackages()
-if args.append:
-    appendWhisper = True
-else:
-    appendWhisper = False
-logFilename = os.path.join(args.logdir, 'subgen.log')
-logging.basicConfig(level=logging.INFO, filename=logFilename)
-if args.debug:
-    logging.getLogger().setLevel("DEBUG")
-
-TIME_OFFSET = 5
+import re
 
 def convert_to_bool(in_bool):
     if isinstance(in_bool, bool):
         return in_bool
     else:
         value = str(in_bool).lower()
-        return value not in ('false', 'off', '0')
+        return value not in ('false', 'off', '0', 0)
 
 # Replace your getenv calls with appropriate default values here
-plextoken = os.getenv('PLEXTOKEN', "token here")
-plexserver = os.getenv('PLEXSERVER', "http://192.168.1.111:32400")
-jellyfintoken = os.getenv('JELLYFINTOKEN', "token here")
-jellyfinserver = os.getenv('JELLYFINSERVER', "http://192.168.1.111:8096")
-whisper_model = os.getenv('WHISPER_MODEL', "medium")
+plextoken = os.getenv('PLEXTOKEN', 'token here')
+plexserver = os.getenv('PLEXSERVER', 'http://192.168.1.111:32400')
+jellyfintoken = os.getenv('JELLYFINTOKEN', 'token here')
+jellyfinserver = os.getenv('JELLYFINSERVER', 'http://192.168.1.111:8096')
+whisper_model = os.getenv('WHISPER_MODEL', 'medium')
 whisper_threads = int(os.getenv('WHISPER_THREADS', 4))
-concurrent_transcriptions = int(os.getenv('CONCURRENT_TRANSCRIPTIONS', '2'))
-transcribe_device = os.getenv('TRANSCRIBE_DEVICE', "cpu")
+concurrent_transcriptions = int(os.getenv('CONCURRENT_TRANSCRIPTIONS', 2))
+transcribe_device = os.getenv('TRANSCRIBE_DEVICE', 'cpu')
 procaddedmedia = convert_to_bool(os.getenv('PROCADDEDMEDIA', True))
 procmediaonplay = convert_to_bool(os.getenv('PROCMEDIAONPLAY', True))
-namesublang = os.getenv('NAMESUBLANG', "aa")
-skipifinternalsublang = os.getenv('SKIPIFINTERNALSUBLANG', "eng")
+namesublang = os.getenv('NAMESUBLANG', 'aa')
+skipifinternalsublang = os.getenv('SKIPIFINTERNALSUBLANG', 'eng')
 webhookport = int(os.getenv('WEBHOOKPORT', 9000))
 word_level_highlight = convert_to_bool(os.getenv('WORD_LEVEL_HIGHLIGHT', False))
-debug = convert_to_bool(os.getenv('DEBUG', False))
+debug = convert_to_bool(os.getenv('DEBUG', True))
 use_path_mapping = convert_to_bool(os.getenv('USE_PATH_MAPPING', False))
-path_mapping_from = os.getenv('PATH_MAPPING_FROM', '/tv')
-path_mapping_to = os.getenv('PATH_MAPPING_TO', '/Volumes/TV')
-model_location = os.getenv('MODEL_PATH', '.')
+path_mapping_from = os.getenv('PATH_MAPPING_FROM', r'/tv')
+path_mapping_to = os.getenv('PATH_MAPPING_TO', r'/Volumes/TV')
+model_location = os.getenv('MODEL_PATH', './models')
 transcribe_folders = os.getenv('TRANSCRIBE_FOLDERS', '')
-transcribe_or_translate = os.getenv('TRANSCRIBE_OR_TRANSLATE', 'translate')
+transcribe_or_translate = os.getenv('TRANSCRIBE_OR_TRANSLATE', 'transcribe')
+force_detected_language_to = os.getenv('FORCE_DETECTED_LANGUAGE_TO', '')
+hf_transformers = convert_to_bool(os.getenv('HF_TRANSFORMERS', False))
+hf_batch_size = int(os.getenv('HF_BATCH_SIZE', 24))
+clear_vram_on_complete = convert_to_bool(os.getenv('CLEAR_VRAM_ON_COMPLETE', True))
 compute_type = os.getenv('COMPUTE_TYPE', 'auto')
+append = convert_to_bool(os.getenv('APPEND', False))
+
 if transcribe_device == "gpu":
     transcribe_device = "cuda"
 
 app = FastAPI()
 model = None
 files_to_transcribe = []
-# subextension =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.srt"
-subextension =  f".{namesublang}.srt"
-subextensionSDH =  f".{namesublang}.sdh.srt"
+subextension =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.srt"
+subextensionSDH =  f".subgen.{whisper_model.split('.')[0]}.{namesublang}.sdh.srt"
 
+in_docker = os.path.exists('/.dockerenv')
+docker_status = "Docker" if in_docker else "Standalone"
 
-# if debug:
-#     logging.basicConfig(stream=sys.stderr, level=logging.NOTSET)
-# else:
-#     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+# Define a filter class
+class MultiplePatternsFilter(logging.Filter):
+    def filter(self, record):
+        # Define the patterns to search for
+        patterns = [
+            "Compression ratio threshold is not met",
+            "Processing segment at",
+            "Log probability threshold is",
+            "Reset prompt",
+            "Attempting to release",
+            "released on ",
+            "Attempting to acquire",
+            "acquired on",
+        ]
+        # Return False if any of the patterns are found, True otherwise
+        return not any(pattern in record.getMessage() for pattern in patterns)
+
+# Configure logging
+if debug:
+    level = logging.DEBUG
+    logging.basicConfig(stream=sys.stderr, level=level, format="%(asctime)s %(levelname)s: %(message)s")
+else:
+    level = logging.INFO
+    logging.basicConfig(stream=sys.stderr, level=level)
+
+# Get the root logger
+logger = logging.getLogger()
+logger.setLevel(level)  # Set the logger level
+
+for handler in logger.handlers:
+    handler.addFilter(MultiplePatternsFilter())
+
+logging.getLogger("multipart").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("watchfiles").setLevel(logging.WARNING)
+
+#This forces a flush to print progress correctly
+def progress(seek, total):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if(docker_status) == 'Docker':
+        #percent = ((seek / total) * 100)
+        #logging.info(f"Transcribe: {percent:.2f}% {seek}/{total} seconds")
+        # Get the current time in seconds
+        current_time = int(time.time())
+        # Convert the time to a string and get the last character
+        last_digit = str(current_time)[-1]
+        # Check if the last digit is '0' or '5' This is to only try to update every 5 seconds so we don't spam console
+        if last_digit in ('0', '5'):
+            logging.info("Force Update...")
+
+TIME_OFFSET = 5
 
 def appendLine(result):
-    if appendWhisper:
+    if append:
         lastSegment = result.segments[-1].copy()
         lastSegment.id += 1
         lastSegment.start += TIME_OFFSET
         lastSegment.end += TIME_OFFSET
-        lastSegment.text = f"Transcribed by whisperAI with faster-whisper ({whisper_model}) on {datetime.now()}"
+        date_time_str = datetime.now().strftime("%d %b %Y - %H:%M:%S")
+        lastSegment.text = f"Transcribed by whisperAI with faster-whisper ({whisper_model}) on {date_time_str}"
         lastSegment.words = []
         # lastSegment.words[0].word = lastSegment.text
         # lastSegment.words = lastSegment.words[:len(lastSegment.words)-1]
@@ -136,13 +146,57 @@ def appendLine(result):
 @app.get("/asr")
 @app.get("/emby")
 @app.get("/detect-language")
+@app.get("/tautulli")
+@app.get("/")
 def handle_get_request(request: Request):
-    return "You accessed this request incorrectly via a GET request.  See https://github.com/McCloudS/subgen for proper configuration"
+    return {"You accessed this request incorrectly via a GET request.  See https://github.com/McCloudS/subgen for proper configuration"}
 
-@app.post("/webhook")
-async def print_warning():
-    print("*** This is the legacy webhook.  You need to update to webhook urls to end in plex, tautulli, or jellyfin instead of webhook. ***")
-    return ""
+@app.get("/status")
+def status():
+    in_docker = os.path.exists('/.dockerenv')
+    docker_status = "Docker" if in_docker else "Standalone"
+    return {"version" : f"Subgen {subgen_version}, stable-ts {stable_whisper.__version__}, whisper {whisper.__version__} ({docker_status})"}
+
+@app.post("/subsync")
+def subsync(
+        audio_file: UploadFile = File(...),
+        subtitle_file: UploadFile = File(...),
+        language: Union[str, None] = Query(default=None),
+):
+    try:
+        logging.info(f"Syncing subtitle file from Subsync webhook")
+        result = None
+        
+        srt_content = subtitle_file.file.read().decode('utf-8')
+        srt_content = re.sub(r'\{.*?\}', '', srt_content)
+        # Remove numeric counters for each entry
+        srt_content = re.sub(r'^\d+$', '', srt_content, flags=re.MULTILINE)
+        # Remove timestamps and formatting
+        srt_content = re.sub(r'\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}', '', srt_content)
+        # Remove any remaining newlines and spaces
+        srt_content = re.sub(r'\n\n+', '\n', srt_content).strip()
+                
+        start_time = time.time()
+        start_model()
+
+        result = model.align(audio_file.file.read(), srt_content, language=language)
+        appendLine(result)
+        elapsed_time = time.time() - start_time
+        minutes, seconds = divmod(int(elapsed_time), 60)
+        logging.info(f"Subsync is completed, it took {minutes} minutes and {seconds} seconds to complete.")
+    except Exception as e:
+        logging.info(f"Error processing or aligning {audio_file.filename} or {subtitle_file.filename}: {e}")
+    finally:
+        delete_model()
+    if result:
+        return StreamingResponse(
+            iter(result.to_srt_vtt(filepath = None, word_level=word_level_highlight)),
+            media_type="text/plain",
+            headers={
+                'Source': 'Aligned using stable-ts from Subgen!',
+            })
+    else:
+        return
 
 @app.post("/tautulli")
 def receive_tautulli_webhook(
@@ -159,7 +213,7 @@ def receive_tautulli_webhook(
         
             gen_subtitles(path_mapping(fullpath), transcribe_or_translate, True)
     else:
-        print("This doesn't appear to be a properly configured Tautulli webhook, please review the instructions again!")
+        return {"This doesn't appear to be a properly configured Tautulli webhook, please review the instructions again!"}
     
     return ""
     
@@ -185,7 +239,7 @@ def receive_plex_webhook(
             except Exception as e:
                 logging.error(f"Failed to refresh metadata for item {plex_json['Metadata']['ratingKey']}: {e}")
     else:
-        print("This doesn't appear to be a properly configured Plex webhook, please review the instructions again!")
+        return {"This doesn't appear to be a properly configured Plex webhook, please review the instructions again!"}
      
     return ""
 
@@ -211,7 +265,7 @@ def receive_jellyfin_webhook(
             except Exception as e:
                 logging.error(f"Failed to refresh metadata for item {ItemId}: {e}")
     else:
-        print("This doesn't appear to be a properly configured Jellyfin webhook, please review the instructions again!")
+        return {"This doesn't appear to be a properly configured Jellyfin webhook, please review the instructions again!"}
      
     return ""
 
@@ -233,17 +287,17 @@ def receive_emby_webhook(
      
                 gen_subtitles(path_mapping(fullpath), transcribe_or_translate, True)
     else:
-        print("This doesn't appear to be a properly configured Emby webhook, please review the instructions again!")
+        return {"This doesn't appear to be a properly configured Emby webhook, please review the instructions again!"}
      
     return ""
-
+    
 @app.post("/batch")
 def batch(
         directory: Union[str, None] = Query(default=None),
         forceLanguage: Union[str, None] = Query(default=None)
 ):
     transcribe_existing(directory, forceLanguage)
-
+    
 # idea and some code for asr and detect language from https://github.com/ahmetoner/whisper-asr-webservice
 @app.post("/asr")
 def asr(
@@ -256,62 +310,82 @@ def asr(
         word_timestamps: bool = Query(default=False, description="Word level timestamps") #not used by Bazarr
 ):
     try:
-        print(f"Transcribing file from Bazarr/ASR webhook")
-        start_time = time.time()
-        start_model()
-        
+        logging.info(f"Transcribing file from Bazarr/ASR webhook")
+        result = None
         #give the 'process' a random name so mutliple Bazaar transcribes can operate at the same time.
         random_name = random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", k=6)
-        bazarr_file = f"Bazarr-detect-language-{random_name}"
-        files_to_transcribe.insert(0,bazarr_file)
-        result = model.transcribe_stable(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, task=task, input_sr=16000)
+        
+        start_time = time.time()
+        start_model()
+        files_to_transcribe.insert(0, f"Bazarr-detect-langauge-{random_name}")
+        if(hf_transformers):
+            result = model.transcribe(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, task=task, input_sr=16000, language=language, batch_size=hf_batch_size, progress_callback=progress)
+        else:
+            result = model.transcribe_stable(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0, task=task, input_sr=16000, language=language, progress_callback=progress)
         appendLine(result)
         elapsed_time = time.time() - start_time
         minutes, seconds = divmod(int(elapsed_time), 60)
-        print(f"Bazarr transcription is completed, it took {minutes} minutes and {seconds} seconds to complete.")
+        logging.info(f"Bazarr transcription is completed, it took {minutes} minutes and {seconds} seconds to complete.")
     except Exception as e:
-        print(f"Error processing or transcribing Bazarr {audio_file.filename}: {e}")
-        print(traceback.format_exc())
-    files_to_transcribe.remove(bazarr_file)
-    delete_model()
-    return StreamingResponse(
-        iter(result.to_srt_vtt(filepath = None, word_level=word_level_highlight)),
-        media_type="text/plain",
-        headers={
-            'Source': 'Transcribed using stable-ts, faster-whisper from Subgen!',
-        })
+        logging.info(f"Error processing or transcribing Bazarr {audio_file.filename}: {e}")
+    finally:
+        if f"Bazarr-detect-langauge-{random_name}" in files_to_transcribe:
+            files_to_transcribe.remove(f"Bazarr-detect-langauge-{random_name}")
+        delete_model()
+    if result:
+        return StreamingResponse(
+            iter(result.to_srt_vtt(filepath = None, word_level=word_level_highlight)),
+            media_type="text/plain",
+            headers={
+                'Source': 'Transcribed using stable-ts from Subgen!',
+            })
+    else:
+        return
 
 @app.post("/detect-language")
 def detect_language(
         audio_file: UploadFile = File(...),
         #encode: bool = Query(default=True, description="Encode audio first through ffmpeg") # This is always false from Bazarr
 ):    
-    start_model()
+    try:
+        #give the 'process' a random name so mutliple Bazaar transcribes can operate at the same time.
+        result = None
+        random_name = random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", k=6)
+        start_model()
 
-    #give the 'process' a random name so mutliple Bazaar transcribes can operate at the same time.
-    random_name = random.choices("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890", k=6)
-    files_to_transcribe.insert(0, f"Bazarr-detect-langauge-{random_name}")
-    detected_lang_code = model.transcribe_stable(whisper.pad_or_trim(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0), input_sr=16000).language
-    
-    files_to_transcribe.remove(f"Bazarr-detect-langauge-{random_name}")
-    delete_model()
-    return {"detected_language": get_lang_pair(whisper_languages, detected_lang_code), "language_code": detected_lang_code}
+        files_to_transcribe.insert(0, f"Bazarr-detect-langauge-{random_name}")
+        if(hf_transformers):
+            detected_lang_code = model.transcribe(whisper.pad_or_trim(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0), input_sr=16000, batch_size=hf_batch_size).language
+        else:
+            detected_lang_code = model.transcribe_stable(whisper.pad_or_trim(np.frombuffer(audio_file.file.read(), np.int16).flatten().astype(np.float32) / 32768.0), input_sr=16000).language
+            
+    except Exception as e:
+        logging.info(f"Error processing or transcribing Bazarr {audio_file.filename}: {e}")
+        
+    finally:
+        if f"Bazarr-detect-langauge-{random_name}" in files_to_transcribe:
+            files_to_transcribe.remove(f"Bazarr-detect-langauge-{random_name}")
+        delete_model()
+
+        return {"detected_language": get_lang_pair(whisper_languages, detected_lang_code), "language_code": detected_lang_code}
 
 def start_model():
     global model
     if model is None:
         logging.debug("Model was purged, need to re-create")
-        model = stable_whisper.load_faster_whisper(whisper_model, download_root=model_location, device=transcribe_device, cpu_threads=whisper_threads, num_workers=concurrent_transcriptions, compute_type=compute_type)
+        if(hf_transformers):
+            logging.debug("Using Hugging Face Transformers, whisper_threads, concurrent_transcriptions, and model_location variables are ignored!")
+            model = stable_whisper.load_hf_whisper(whisper_model, device=transcribe_device)
+        else:
+            model = stable_whisper.load_faster_whisper(whisper_model, download_root=model_location, device=transcribe_device, cpu_threads=whisper_threads, num_workers=concurrent_transcriptions, compute_type=compute_type)
 
 def delete_model():
-    if len(files_to_transcribe) == 0:
-        global model
-        logging.debug("Queue is empty, clearing/releasing VRAM")
-
-def reallyDeleteModel():
-        del model
-        model = None
-        gc.collect()
+    if clear_vram_on_complete:
+        if len(files_to_transcribe) == 0:
+            global model
+            logging.debug("Queue is empty, clearing/releasing VRAM")
+            model = None
+            gc.collect()
 
 def get_lang_pair(whisper_languages, key):
   """Returns the other side of the pair in the Whisper languages dictionary.
@@ -331,7 +405,7 @@ def get_lang_pair(whisper_languages, key):
   else:
     return whisper_languages[other_side]
 
-def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True, forceLanguage=None) -> None:
+def gen_subtitles(file_path: str, transcribe_or_translate: str, front=True, forceLanguage=None) -> None:
     """Generates subtitles for a video file.
 
     Args:
@@ -341,8 +415,8 @@ def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True, 
     """
     
     try:
-        if not is_video_file(file_path):
-            print(f"{file_path} isn't a video file!")
+        if not has_audio(file_path):
+            logging.debug(f"{file_path} doesn't have any audio to transcribe!")
             return None
             
         if file_path not in files_to_transcribe:
@@ -354,38 +428,46 @@ def gen_subtitles(file_path: str, transcribe_or_translate_str: str, front=True, 
             elif os.path.exists(file_path.rsplit('.', 1)[0] + subextensionSDH):
                 message = f"{file_path} already has a SDH subtitle created for this, skipping it"
             if message != None:
-                print(message)
-                return message                       
-                  
+                logging.info(message)
+                return message
+                
             if front:
                 files_to_transcribe.insert(0, file_path)
             else:
                 files_to_transcribe.append(file_path)
-            print(f"Added {os.path.basename(file_path)} for transcription.")
+            logging.info(f"Added {os.path.basename(file_path)} for transcription.")
             # Start transcription for the file in a separate thread
 
-            print(f"{len(files_to_transcribe)} files in the queue for transcription")
-            print(f"Transcribing file: {os.path.basename(file_path)}")
+            logging.info(f"{len(files_to_transcribe)} files in the queue for transcription")
+            logging.info(f"Transcribing file: {os.path.basename(file_path)}")
             start_time = time.time()
             start_model()
-            if forceLanguage == None:
-                result = model.transcribe_stable(file_path, task=transcribe_or_translate_str)
+            global force_detected_language_to
+            if force_detected_language_to:
+                forceLanguage = force_detected_language_to
+                logging.info(f"Forcing language to {forceLanguage}")
+            if(hf_transformers):
+                result = model.transcribe(file_path, language=forceLanguage, batch_size=hf_batch_size, task=transcribe_or_translate, progress_callback=progress)
             else:
-                result = model.transcribe_stable(file_path, language=forceLanguage, task=transcribe_or_translate_str)
+                result = model.transcribe_stable(file_path, language=forceLanguage, task=transcribe_or_translate, progress_callback=progress)
             appendLine(result)
-            result.to_srt_vtt(file_path.rsplit('.', 1)[0] + subextension, word_level=word_level_highlight)
+            result.to_srt_vtt(get_file_name_without_extension(file_path) + subextension, word_level=word_level_highlight)
             elapsed_time = time.time() - start_time
             minutes, seconds = divmod(int(elapsed_time), 60)
-            print(f"Transcription of {os.path.basename(file_path)} is completed, it took {minutes} minutes and {seconds} seconds to complete.")
-            files_to_transcribe.remove(file_path)
+            logging.info(f"Transcription of {os.path.basename(file_path)} is completed, it took {minutes} minutes and {seconds} seconds to complete.")
         else:
-            print(f"File {os.path.basename(file_path)} is already in the transcription list. Skipping.")
+            logging.info(f"File {os.path.basename(file_path)} is already in the transcription list. Skipping.")
 
     except Exception as e:
-        print(f"Error processing or transcribing {file_path}: {e}")
-        print(traceback.format_exc())
+        logging.info(f"Error processing or transcribing {file_path}: {e}")
     finally:
+        if file_path in files_to_transcribe:
+            files_to_transcribe.remove(file_path)
         delete_model()
+
+def get_file_name_without_extension(file_path):
+    file_name, file_extension = os.path.splitext(file_path)
+    return file_name
 
 def has_subtitle_language(video_file, target_language):
     try:
@@ -408,8 +490,7 @@ def has_subtitle_language(video_file, target_language):
 
         container.close()
     except Exception as e:
-        print(f"An error occurred: {e}")
-        print(traceback.format_exc())
+        logging.info(f"An error occurred: {e}")
         return False
     
 def get_plex_file_name(itemid: str, server_ip: str, plex_token: str) -> str:
@@ -465,7 +546,7 @@ def refresh_plex_metadata(itemid: str, server_ip: str, plex_token: str) -> None:
 
     # Check if the request was successful
     if response.status_code == 200:
-        print("Metadata refresh initiated successfully.")
+        logging.info("Metadata refresh initiated successfully.")
     else:
         raise Exception(f"Error refreshing metadata: {response.status_code}")
 
@@ -501,7 +582,7 @@ def refresh_jellyfin_metadata(itemid: str, server_ip: str, jellyfin_token: str) 
 
     # Check if the request was successful
     if response.status_code == 204:
-        print("Metadata refresh queued successfully.")
+        logging.info("Metadata refresh queued successfully.")
     else:
         raise Exception(f"Error refreshing metadata: {response.status_code}")
 
@@ -541,47 +622,40 @@ def get_jellyfin_admin(users):
             
     raise Exception("Unable to find administrator user in Jellyfin")
 
-def is_video_file(file_path):
-    av.logging.set_level(av.logging.PANIC)
+def has_audio(file_path):
     try:
         container = av.open(file_path)
         hasVideo = False
         hasAudio = False
         for stream in container.streams:
-            if stream.type == 'video':
-                hasVideo = True
-            elif stream.type == 'audio':
-                hasAudio = True
-        if hasAudio and hasVideo:
-            return True
-        else:
-            return False
+            if stream.type == 'audio':
+                return True
+        return False
     except (av.AVError, UnicodeDecodeError):
         return False
 
 def path_mapping(fullpath):
     if use_path_mapping:
-        fullpath = fullpath.replace(path_mapping_from, path_mapping_to)
         logging.debug("Updated path: " + fullpath.replace(path_mapping_from, path_mapping_to))
+        return fullpath.replace(path_mapping_from, path_mapping_to)
     return fullpath
 
 def transcribe_existing(transcribe_folders, forceLanguage=None):
-    print("Starting to search folders to see if we need to create subtitles.")
-    transcribe_folders = transcribe_folders.split(",")
+    transcribe_folders = transcribe_folders.split("|")
+    logging.info("Starting to search folders to see if we need to create subtitles.")
     logging.debug("The folders are:")
     for path in transcribe_folders:
         logging.debug(path)
         for root, dirs, files in os.walk(path):
             for file in files:
                 file_path = os.path.join(root, file)
-                if is_video_file(file_path):
-                    gen_subtitles(path_mapping(file_path), transcribe_or_translate, False, forceLanguage)
+                gen_subtitles(path_mapping(file_path), transcribe_or_translate, False, forceLanguage)
     # if the path specified was actually a single file and not a folder, process it
     if os.path.isfile(path):
-        if is_video_file(path):
-            gen_subtitles(path_mapping(path), transcribe_or_translate, False, forceLanguage)                
-    print("Finished searching and queueing files for transcription")
+        if has_audio(path):
+            gen_subtitles(path_mapping(path), transcribe_or_translate, False, forceLanguage) 
                     
+    logging.info("Finished searching and queueing files for transcription")
 
 whisper_languages = {
     "en": "english",
@@ -693,6 +767,16 @@ if __name__ == "__main__":
     if transcribe_folders:
         transcribe_existing(transcribe_folders)
     import uvicorn
-    print("Starting webhook!")
+    logging.info(f"Subgen v{subgen_version}")
+    logging.info("Starting Subgen with listening webhooks!")
+    logging.info(f"Transcriptions are limited to running {str(concurrent_transcriptions)} at a time")
+    logging.info(f"Running {str(whisper_threads)} threads per transcription")
+    logging.info(f"Using {transcribe_device} to encode")
+    if hf_transformers:
+        logging.info(f"Using Hugging Face Transformers")
+    else:
+        logging.info(f"Using faster-whisper")
+    if transcribe_folders:
+        transcribe_existing(transcribe_folders)
     uvicorn.run("subgen:app", host="0.0.0.0", port=int(webhookport), reload=debug, use_colors=True)
 
